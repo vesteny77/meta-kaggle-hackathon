@@ -1,0 +1,52 @@
+[build-system]
+requires = ["setuptools>=42", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "meta-kaggle-hackathon"
+version = "0.1.0"
+description = "From XGBoost to Transformers: 15 Years of Evolving Kaggle Strategies"
+readme = "README.md"
+requires-python = ">=3.11"
+license = {text = "MIT"}
+authors = [
+    {name = "Your Name", email = "your.email@example.com"},
+]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+]
+# Note: Dependencies are primarily managed through conda environment.yml
+dependencies = []
+
+[project.optional-dependencies]
+test = []
+dev = []
+
+[tool.black]
+line-length = 88
+target-version = ["py311"]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 88
+select = ["E", "F", "B", "I"]
+ignore = []
+
+[tool.mypy]
+python_version = "3.11"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = "test_*.py"
+
+[tool.kedro]
+package_name = "src"
+project_name = "meta_kaggle_hackathon"
+kedro_init_version = "1.0.0"
+source_dir = "src"
+

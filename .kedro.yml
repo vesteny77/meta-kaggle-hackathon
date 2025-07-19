@@ -1,0 +1,18 @@
+# Configuration for Kedro project
+
+# Package name for `pip install -e .` to work properly
+package_name: "src"
+
+# Project hooks for extending Kedro
+project_hooks:
+  # Directory containing hooks
+  - src.hooks
+
+# Disable versioning
+disable_hooks_for_plugins: []
+
+# Set the plugins
+plugins:
+  project:
+    default:
+      runner: SequentialRunner

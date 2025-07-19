@@ -1,0 +1,20 @@
+# Parameters for Meta Kaggle project
+
+# ETL parameters
+etl:
+  src_dir: "data/raw_csv"
+  dst_dir: "data/parquet/raw"
+  intermediate_dir: "data/intermediate"
+  mini_meta_dir: "data/mini_meta"
+  sample_frac: 0.01
+  tables:
+    KernelVersions: "CreationDate"
+    Competitions: "DeadlineDate"
+    Datasets: "CreationDate"
+    Users: "RegisterDate"
+    ForumMessages: "PostDate"
+    KernelTags: null
+    Tags: null
+    CompetitionTags: null
+    KernelVersionCompetitionSources: null
+    KernelVersionDatasetSources: null
