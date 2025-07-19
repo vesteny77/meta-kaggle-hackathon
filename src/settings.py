@@ -1,4 +1,5 @@
 """Project settings."""
+
 from pathlib import Path
 
 # This is the location of the project configuration directory

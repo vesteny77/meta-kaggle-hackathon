@@ -19,7 +19,15 @@ repos:
     -   id: black
 
 -   repo: https://github.com/pre-commit/mirrors-mypy
-    rev: v1.8.0
+    rev: v1.10.0
     hooks:
     -   id: mypy
-        additional_dependencies: [types-requests]
+        args: [--strict, --ignore-missing-imports]
+
+-   repo: local
+    hooks:
+    -   id: create-raw-code-dir
+        name: Create raw_code directory
+        entry: python scripts/create_raw_code_dir.py
+        language: python
+        stages: [commit]

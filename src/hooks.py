@@ -1,5 +1,6 @@
 """Project hooks."""
-from typing import Dict, Any
+
+from typing import Any, Dict
 
 from kedro.framework.hooks import hook_impl
 

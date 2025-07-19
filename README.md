@@ -108,11 +108,47 @@ python -m src.main etl
 
 ## Testing
 
-Run tests with pytest:
+The project includes a comprehensive test suite to verify the data pipeline's correctness. Tests are organized into three categories:
+
+1. **Unit Tests**: Test individual functions in isolation
+2. **Integration Tests**: Test interactions between pipeline components
+3. **End-to-End Tests**: Test the complete pipeline using synthetic data
+
+### Running Tests
+
+You can run all tests with pytest:
 
 ```bash
+# Run all tests
 pytest tests/
+
+# Run specific test categories
+pytest tests/test_nodes.py        # Unit tests
+pytest tests/test_pipeline_integration.py  # Integration tests
+pytest tests/test_pipeline_e2e.py  # End-to-end tests
+
+# Run tests with detailed output
+pytest tests/ -v
+
+# Run tests with code coverage report
+pytest tests/ --cov=src
 ```
+
+### Test Structure
+
+- `tests/test_nodes.py`: Tests for individual data processing functions
+- `tests/test_pipeline_integration.py`: Tests for pipeline connections
+- `tests/test_pipeline_e2e.py`: End-to-end tests with synthetic dataset
+- `tests/test_light_pipeline.py`: Light tests that can run without full data
+
+### Writing New Tests
+
+When adding new features to the pipeline, follow these guidelines for test creation:
+
+1. Write unit tests for new functions in `test_nodes.py`
+2. Update integration tests if pipeline connections change
+3. Ensure end-to-end tests cover the new functionality
+4. Use small synthetic datasets to keep tests fast
 
 ## Development
 

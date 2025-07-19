@@ -43,10 +43,12 @@ disallow_incomplete_defs = true
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 python_files = "test_*.py"
+pythonpath = ["."]
+addopts = "--cov=src"
+filterwarnings = ["ignore::DeprecationWarning"]
 
 [tool.kedro]
 package_name = "src"
 project_name = "meta_kaggle_hackathon"
 kedro_init_version = "1.0.0"
 source_dir = "src"
-

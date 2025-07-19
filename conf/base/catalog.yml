@@ -3,19 +3,19 @@
 # Intermediate datasets
 parquet_raw:
   type: kedro.io.MemoryDataset
-  
+
 bigjoin:
   type: pandas.ParquetDataset
   filepath: data/intermediate/kernel_bigjoin.parquet
   save_args:
     compression: "zstd"
-  
+
 bigjoin_clean:
   type: pandas.ParquetDataset
   filepath: data/intermediate/kernel_bigjoin_clean.parquet
   save_args:
     compression: "zstd"
-  
+
 mini_meta:
   type: pandas.ParquetDataset
   filepath: data/mini_meta/kernel_bigjoin_1pct.parquet

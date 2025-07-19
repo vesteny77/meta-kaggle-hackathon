@@ -1,4 +1,5 @@
 """Pipeline registry for the Meta Kaggle project."""
+
 from typing import Dict
 
 from kedro.pipeline import Pipeline
@@ -13,7 +14,7 @@ def register_pipelines() -> Dict[str, Pipeline]:
         A dictionary mapping pipeline names to ``Pipeline`` objects.
     """
     etl_pipeline = create_etl_pipeline()
-    
+
     return {
         "__default__": etl_pipeline,
         "etl": etl_pipeline,
