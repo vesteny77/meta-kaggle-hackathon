@@ -10,8 +10,6 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-# Switch to GCS for accessing kernel files
-# from src.features.path_utils import find_code_file
 from src.features.extract_features import main as run_extraction
 
 # Directory paths
@@ -168,15 +166,14 @@ def main():
     )
     parser.add_argument("--output", type=str, default=None, help="Output file path")
     parser.add_argument(
-        "--gcs-bucket",
+        "--local_root",
         type=str,
-        default="kaggle-meta-kaggle-code-downloads",
-        help="GCS bucket containing kernel files",
+        default="data/raw_code",
+        help="Local root path containing kernel files",
     )
     args = parser.parse_args()
 
-    # Use the new implementation that works with GCS
-    print("Starting feature extraction from GCS bucket...")
+    print("Starting feature extraction from local dataset...")
     try:
         run_extraction()
         print("Feature extraction completed successfully")

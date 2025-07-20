@@ -7,15 +7,14 @@ import json
 import polars as pl
 
 from src.features.extract_features import (
-    detect_imports, 
-    tag_libraries, 
-    tag_architectures, 
-    complexity_metrics, 
+    detect_imports,
+    tag_libraries,
+    tag_architectures,
+    complexity_metrics,
     embed_markdown,
-    read_code,
-    GCSFileHandler,
-    process_kernel_batch
+    process_kernel_batch,
 )
+from src.features.local_path_utils import LocalFileHandler, read_kernel_code
 
 
 def test_detect_imports_ast():
@@ -184,29 +183,29 @@ def test_embed_markdown_error(mock_sentence_transformer):
 
 
 @pytest.fixture
-def mock_gcs_handler():
-    """Create a mock GCSFileHandler."""
-    with patch('src.features.extract_features.GCSFileHandler') as mock_handler_class:
+def mock_file_handler():
+    """Create a mock LocalFileHandler."""
+    with patch('src.features.local_path_utils.LocalFileHandler') as mock_handler_class:
         handler = Mock()
         mock_handler_class.return_value = handler
         yield handler
 
 
-def test_read_code_python(mock_gcs_handler):
+def test_read_code_python(mock_file_handler):
     """Test reading Python code."""
     # Configure mock
-    mock_gcs_handler.get_kernel_path.return_value = "0001/234/12345.py"
-    mock_gcs_handler.read_file.return_value = "import numpy as np\n\nprint('Hello')"
+    mock_file_handler.get_kernel_path.return_value = "0001/234/12345.py"
+    mock_file_handler.read_file.return_value = "import numpy as np\n\nprint('Hello')"
     
     # Test
-    code, md_cells = read_code(mock_gcs_handler, 12345)
+    code, md_cells, _ = read_kernel_code(mock_file_handler, 12345)
     
     # Verify
     assert code == "import numpy as np\n\nprint('Hello')"
     assert md_cells == []
 
 
-def test_read_code_ipynb(mock_gcs_handler):
+def test_read_code_ipynb(mock_file_handler):
     """Test reading Jupyter notebook code."""
     # Create mock notebook content
     notebook_content = {
@@ -219,38 +218,38 @@ def test_read_code_ipynb(mock_gcs_handler):
     }
     
     # Configure mock
-    mock_gcs_handler.get_kernel_path.return_value = "0001/234/12345.ipynb"
-    mock_gcs_handler.read_file.return_value = json.dumps(notebook_content)
+    mock_file_handler.get_kernel_path.return_value = "0001/234/12345.ipynb"
+    mock_file_handler.read_file.return_value = json.dumps(notebook_content)
     
     # Test
-    code, md_cells = read_code(mock_gcs_handler, 12345)
+    code, md_cells, _ = read_kernel_code(mock_file_handler, 12345)
     
     # Verify
     assert code == "import pandas as pd\ndf = pd.DataFrame()\nprint('Hello')"
     assert md_cells == ["# Title\nDescription", "## Section"]
 
 
-def test_read_code_nonexistent(mock_gcs_handler):
+def test_read_code_nonexistent(mock_file_handler):
     """Test reading nonexistent kernel code."""
     # Configure mock
-    mock_gcs_handler.get_kernel_path.return_value = None
+    mock_file_handler.get_kernel_path.return_value = None
     
     # Test
-    code, md_cells = read_code(mock_gcs_handler, 12345)
+    code, md_cells, _ = read_kernel_code(mock_file_handler, 12345)
     
     # Verify
     assert code is None
     assert md_cells == []
 
 
-def test_read_code_ipynb_error(mock_gcs_handler):
+def test_read_code_ipynb_error(mock_file_handler):
     """Test error handling with invalid notebook."""
     # Configure mock
-    mock_gcs_handler.get_kernel_path.return_value = "0001/234/12345.ipynb"
-    mock_gcs_handler.read_file.return_value = "invalid json"
+    mock_file_handler.get_kernel_path.return_value = "0001/234/12345.ipynb"
+    mock_file_handler.read_file.return_value = "invalid json"
     
     # Test
-    code, md_cells = read_code(mock_gcs_handler, 12345)
+    code, md_cells, _ = read_kernel_code(mock_file_handler, 12345)
     
     # Verify
     assert code is None
@@ -261,8 +260,8 @@ def test_read_code_ipynb_error(mock_gcs_handler):
 def test_process_kernel_batch(mock_ray_remote):
     """Test kernel batch processing."""
     # Since ray.remote is complex to mock properly, we'll just check basic function structure
-    with patch('src.features.extract_features.GCSFileHandler') as mock_gcs_class:
-        with patch('src.features.extract_features.read_code') as mock_read_code:
+    with patch('src.features.extract_features.LocalFileHandler') as mock_gcs_class:
+        with patch('src.features.extract_features.read_kernel_code') as mock_read_code:
             with patch('src.features.extract_features.detect_imports') as mock_detect_imports:
                 with patch('src.features.extract_features.tag_libraries') as mock_tag_libraries:
                     with patch('src.features.extract_features.tag_architectures') as mock_tag_architectures:
@@ -285,9 +284,9 @@ def test_process_kernel_batch(mock_ray_remote):
                                     
                                     # Call function directly (not through ray)
                                     result = process_kernel_batch._function(
-                                        [(12345, 60, "Tesla P100")], 
-                                        "test-bucket", 
-                                        "all-MiniLM-L6-v2"
+                                        [(12345, 60, "Tesla P100")],
+                                        "data/raw_code",
+                                        "all-MiniLM-L6-v2",
                                     )
                                     
                                     # Verify

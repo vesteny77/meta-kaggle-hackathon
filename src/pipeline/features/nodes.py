@@ -24,11 +24,10 @@ except ImportError:  # pragma: no cover
     BERTopic = _BERTopicPlaceholder  # type: ignore
 
 from src.features.extract_features import (
-    extract_features, 
+    extract_features,
     process_kernel_batch,
-    GCSFileHandler
 )
-from src.features.gcs_path_utils import read_kernel_code
+from src.features.local_path_utils import read_kernel_code
 
 
 logger = logging.getLogger(__name__)
@@ -46,7 +45,7 @@ def extract_features_node(metadata_path: str, params: Dict[str, Any]) -> Path:
         Path: Path to the output features Parquet file
     """
     # Configure parameters
-    gcs_bucket = params.get("gcs_bucket", "kaggle-meta-kaggle-code-downloads")
+    local_root = Path(params.get("local_code_root", "data/raw_code"))
     output_dir = Path(params.get("output_dir", "data/intermediate"))
     output_path = output_dir / "kernel_features_raw.parquet"
     sample_size = params.get("sample_size", 0)  # 0 means process all
@@ -114,7 +113,7 @@ def extract_features_node(metadata_path: str, params: Dict[str, Any]) -> Path:
     remote_wrapper = ray.remote(getattr(process_kernel_batch, "_function", process_kernel_batch))
 
     futures = [
-        remote_wrapper.remote(batch, gcs_bucket, model_name)
+        remote_wrapper.remote(batch, str(local_root), model_name)
         for batch in batches
     ]
     

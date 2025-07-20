@@ -5,6 +5,8 @@ from pathlib import Path
 import os
 from typing import Optional, Tuple
 from google.cloud import storage
+import requests
+from urllib.parse import quote_plus
 
 
 class GCSFileHandler:
@@ -12,21 +14,58 @@ class GCSFileHandler:
     
     def __init__(self, bucket_name: str):
         """Initialize with GCS bucket name."""
+        self._user_project = os.getenv("REQUESTER_PAYS_PROJECT")
+        if self._user_project:
+            self.client = storage.Client(project=os.getenv("REQUESTER_PAYS_PROJECT"))
+        else:
         self.client = storage.Client.create_anonymous_client()
-        self.bucket = self.client.bucket(bucket_name)
+        self.bucket = self.client.bucket(bucket_name, user_project=self._user_project)
     
     def list_paths(self, prefix: Optional[str] = None, max_results: int = 10) -> list[str]:
         """List available paths in the bucket."""
+        try:
         blobs = self.bucket.list_blobs(prefix=prefix, max_results=max_results)
         return [blob.name for blob in blobs]
+        except Exception:
+            # Fallback to HTTP API (public buckets only)
+            return self._list_paths_via_http(prefix, max_results)
+
+    def _list_paths_via_http(self, prefix: Optional[str], max_results: int) -> list[str]:
+        """List objects via public GCS HTTP endpoint (no auth)."""
+        base_url = f"https://storage.googleapis.com/storage/v1/b/{self.bucket.name}/o"
+        params = {"maxResults": max_results}
+        if prefix:
+            params["prefix"] = prefix
+        params["fields"] = "items(name)"
+        if self._user_project:
+            params["userProject"] = self._user_project
+
+        try:
+            resp = requests.get(base_url, params=params, timeout=5)
+            resp.raise_for_status()
+            data = resp.json()
+            return [item["name"] for item in data.get("items", [])]
+        except Exception:
+            return []
     
     def read_file(self, gcs_path: str) -> str:
         """Read file content directly without download."""
         blob = self.bucket.blob(gcs_path)
         try:
+            if self._user_project:
+                return blob.download_as_text(encoding="utf-8", user_project=self._user_project)
             return blob.download_as_text(encoding="utf-8")
+        except Exception:
+            # Try HTTP fallback for public access
+            try:
+                url = f"https://storage.googleapis.com/{self.bucket.name}/{quote_plus(gcs_path)}"
+                if self._user_project:
+                    url += f"?userProject={quote_plus(self._user_project)}"
+                resp = requests.get(url, timeout=5)
+                resp.raise_for_status()
+                return resp.content.decode("utf-8", errors="replace")
         except Exception as e:
-            # Fall back to binary for non-text files
+                # Fall back to binary via API
             try:
                 binary_content = blob.download_as_bytes()
                 return binary_content.decode('utf-8', errors='replace')

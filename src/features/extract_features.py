@@ -2,7 +2,7 @@
 """
 Feature extraction module for Meta Kaggle kernels.
 
-This module analyzes kernel code files from the Google Cloud Storage bucket to extract:
+This module analyzes kernel code files from data/raw_code to extract:
 - Library usage patterns
 - Model architecture patterns
 - Code complexity metrics
@@ -20,12 +20,11 @@ from radon.complexity import cc_visit
 from sentence_transformers import SentenceTransformer
 from datetime import datetime, timedelta
 from pathlib import Path
-import tempfile
-from google.cloud import storage
-import tiktoken
 import logging
 from tqdm import tqdm
 import time
+
+from src.features.local_path_utils import LocalFileHandler, read_kernel_code
 
 # Configure logging
 logging.basicConfig(
@@ -36,7 +35,7 @@ logger = logging.getLogger(__name__)
 
 # Configuration
 METADATA = "data/intermediate/kernel_bigjoin_clean.parquet"
-GCS_BUCKET_NAME = "kaggle-meta-kaggle-code-downloads"
+LOCAL_CODE_ROOT = Path("data/raw_code")
 OUTPUT_DIR = Path("data/intermediate")
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -68,106 +67,6 @@ ARCH_REGEX = {
     "UNet": r"\bUNet\b|\bU-Net\b",
     "GAN": r"\bGAN\b|\bCycleGAN\b|\bDCGAN\b|\bStyleGAN\b",
 }
-
-
-class GCSFileHandler:
-    """Handler for accessing files in Google Cloud Storage."""
-    
-    def __init__(self, bucket_name):
-        """Initialize with GCS bucket name."""
-        self.client = storage.Client.create_anonymous_client()
-        self.bucket = self.client.bucket(bucket_name)
-        
-    def list_paths(self, prefix=None):
-        """List available paths in the bucket."""
-        blobs = self.bucket.list_blobs(prefix=prefix, max_results=10)
-        return [blob.name for blob in blobs]
-    
-    def list_sample_paths(self, prefix=None, limit=5):
-        """List sample paths to understand structure."""
-        blobs = self.bucket.list_blobs(prefix=prefix, max_results=limit)
-        return [blob.name for blob in blobs]
-    
-    def download_to_tempfile(self, gcs_path):
-        """Download a file to a temporary location."""
-        blob = self.bucket.blob(gcs_path)
-        _, temp_filename = tempfile.mkstemp()
-        blob.download_to_filename(temp_filename)
-        return temp_filename
-    
-    def read_file(self, gcs_path):
-        """Read file content directly without download."""
-        blob = self.bucket.blob(gcs_path)
-        return blob.download_as_text(encoding="utf-8")
-    
-    def file_exists(self, gcs_path):
-        """Check if a file exists in the bucket."""
-        blob = self.bucket.blob(gcs_path)
-        return blob.exists()
-    
-    def get_kernel_path(self, kernel_id):
-        """Generate potential file paths for a kernel ID."""
-        # Determine the prefix dirs based on kernel ID
-        padded_id = str(kernel_id).zfill(10)
-        prefix1 = padded_id[:4]
-        prefix2 = padded_id[4:7]
-        
-        # Check for .py file
-        py_path = f"{prefix1}/{prefix2}/{kernel_id}.py"
-        if self.file_exists(py_path):
-            return py_path
-            
-        # Check for .ipynb file
-        ipynb_path = f"{prefix1}/{prefix2}/{kernel_id}.ipynb"
-        if self.file_exists(ipynb_path):
-            return ipynb_path
-        
-        # Return None if neither exists
-        return None
-
-
-def read_code(gcs_handler, kernel_id):
-    """
-    Read code from a kernel file in GCS.
-    
-    Args:
-        gcs_handler: GCS file handler
-        kernel_id: Kernel ID
-        
-    Returns:
-        tuple: (code_str, markdown_list)
-    """
-    file_path = gcs_handler.get_kernel_path(kernel_id)
-    
-    if not file_path:
-        return None, []
-    
-    file_content = gcs_handler.read_file(file_path)
-    
-    # Handle Jupyter notebooks (.ipynb)
-    if file_path.endswith('.ipynb'):
-        try:
-            nb = json.loads(file_content)
-            code_cells = []
-            md_cells = []
-            
-            for cell in nb.get('cells', []):
-                if cell.get('cell_type') == 'code':
-                    # Join individual lines within a cell using newlines to preserve structure
-                    code_cells.append("\n".join(cell.get('source', [])))
-                elif cell.get('cell_type') == 'markdown':
-                    md_cells.append("\n".join(cell.get('source', [])))
-            
-            return "\n".join(code_cells), md_cells
-        except Exception as e:
-            logger.error(f"Error parsing notebook {kernel_id}: {str(e)}")
-            return None, []
-    
-    # Handle Python files (.py)
-    elif file_path.endswith('.py'):
-        return file_content, []
-    
-    return None, []
 
 
 def detect_imports(code_str):
@@ -317,19 +216,19 @@ def embed_markdown(md_list, model):
 
 
 @ray.remote
-def process_kernel_batch(kernel_batch, gcs_bucket_name, model_name=None):
+def process_kernel_batch(kernel_batch, local_root: Path | str, model_name=None):
     """
     Process a batch of kernels (Ray task).
     
     Args:
         kernel_batch: List of kernel IDs and metadata
-        gcs_bucket_name: GCS bucket name
+        local_root: local root path
         model_name: Optional name of SentenceTransformer model
         
     Returns:
         list: List of feature dictionaries
     """
-    gcs_handler = GCSFileHandler(gcs_bucket_name)
+    file_handler = LocalFileHandler(local_root)
     
     # Initialize embedding model if needed
     model = None
@@ -341,8 +240,8 @@ def process_kernel_batch(kernel_batch, gcs_bucket_name, model_name=None):
     
     results = []
     for kernel_id, exec_sec, gpu_type in kernel_batch:
-        # Read code files from GCS
-        code_str, md_cells = read_code(gcs_handler, kernel_id)
+        # Read code files
+        code_str, md_cells = read_kernel_code(file_handler, kernel_id)
         
         if code_str is None:
             continue
@@ -378,13 +277,13 @@ def main():
     # Initialize Ray with auto-detected resources
     ray.init(num_cpus=os.cpu_count())
     
-    # Create GCS handler to explore bucket structure
-    gcs_handler = GCSFileHandler(GCS_BUCKET_NAME)
+    # Create file handler to explore dataset structure
+    file_handler = LocalFileHandler(LOCAL_CODE_ROOT)
     
     # List some files to understand structure
-    logger.info("Exploring GCS bucket structure...")
-    sample_paths = gcs_handler.list_sample_paths(limit=10)
-    logger.info(f"Sample paths in GCS bucket: {sample_paths}")
+    logger.info("Exploring dataset structure...")
+    sample_paths = file_handler.list_sample_paths(limit=10)
+    logger.info(f"Sample paths in dataset: {sample_paths}")
     
     # Load metadata from parquet
     logger.info(f"Loading kernel metadata from {METADATA}")
@@ -421,7 +320,7 @@ def main():
     # Process batches in parallel with Ray
     logger.info(f"Submitting {len(batches)} batches to Ray workers")
     model_name = "all-MiniLM-L6-v2"  # Small and fast model
-    futures = [process_kernel_batch.remote(batch, GCS_BUCKET_NAME, model_name) 
+    futures = [process_kernel_batch.remote(batch, LOCAL_CODE_ROOT, model_name) 
                for batch in batches]
     
     # Collect results
