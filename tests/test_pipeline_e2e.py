@@ -49,12 +49,12 @@ def test_e2e_pipeline(e2e_test_dir):
     intermediate_dir = data_dir / "intermediate"
     mini_meta_dir = data_dir / "mini_meta"
 
-    # Define tables with date columns
+    # Define tables with date columns for this specific test
     tables = {
         "KernelVersions": "creationDate",
         "Competitions": "endDate",
-        "Datasets": "creationDate",
-        "Users": "creationDate",
+        "Datasets": None,  # Test data for Datasets does not have a date column
+        "Users": "RegisterDate",
         "Kernels": None,
         "KernelVersionCompetitionSources": None,
         "KernelVersionDatasetSources": None,

@@ -34,6 +34,7 @@ def csv_to_parquet_node(params):
             "KernelVersions": "CreationDate",
             "Competitions": "DeadlineDate",
             "Datasets": "CreationDate",
+            "Kernels": "",
             "KernelVersionCompetitionSources": "",
             "KernelVersionDatasetSources": "",
             "Users": "RegisterDate",
@@ -53,18 +54,18 @@ def build_bigjoin_node(parquet_raw, params):
         params: Pipeline parameters
 
     Returns:
-        Path: Path to the output bigjoin Parquet file
+        pl.DataFrame: The bigjoined polars DataFrame
     """
     output_dir = Path(params.get("intermediate_dir", "data/intermediate"))
     return build_bigjoin(parquet_raw, output_dir)
 
 
-def prune_columns_node(bigjoin, params):
+def prune_columns_node(bigjoin_path, params):
     """
     Node function wrapper for prune_columns.
 
     Args:
-        bigjoin: Path to the input bigjoin Parquet file
+        bigjoin_path: The bigjoined polars DataFrame
         params: Pipeline parameters
 
     Returns:
@@ -72,7 +73,7 @@ def prune_columns_node(bigjoin, params):
     """
     intermediate_dir = Path(params.get("intermediate_dir", "data/intermediate"))
     output_path = intermediate_dir / "kernel_bigjoin_clean.parquet"
-    return prune_columns(Path(bigjoin), output_path)
+    return prune_columns(bigjoin_path, output_path)
 
 
 def validate_schema_node(parquet_raw, params):
@@ -106,24 +107,24 @@ def validate_data_node(bigjoin_clean, params):
     Returns:
         bool: True if all checks pass
     """
-    return validate_data(Path(bigjoin_clean))
+    return validate_data(bigjoin_clean)
 
 
-def create_mini_meta_node(bigjoin_clean, params):
+def create_mini_meta_node(bigjoin_clean_path, params):
     """
     Node function wrapper for create_mini_meta.
 
     Args:
-        bigjoin_clean: Path to the cleaned bigjoin file
+        bigjoin_clean_path: The cleaned bigjoin DataFrame
         params: Pipeline parameters
 
     Returns:
-        Path: Path to the mini-meta sample
+        Path: Path to the mini-meta sample parquet
     """
     sample_frac = params.get("sample_frac", 0.01)
     mini_meta_dir = Path(params.get("mini_meta_dir", "data/mini_meta"))
     output_path = mini_meta_dir / f"kernel_bigjoin_{int(sample_frac*100)}pct.parquet"
-    return create_mini_meta(Path(bigjoin_clean), output_path, sample_frac)
+    return create_mini_meta(bigjoin_clean_path, output_path, sample_frac)
 
 
 def create_pipeline(**kwargs):

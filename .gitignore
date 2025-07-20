@@ -221,3 +221,5 @@ data/
 # Visuals
 visuals/*
 !visuals/.gitkeep
+
+.viz

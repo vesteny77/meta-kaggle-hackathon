@@ -13,8 +13,18 @@ etl:
     Datasets: "CreationDate"
     Users: "RegisterDate"
     ForumMessages: "PostDate"
+    Kernels: null
     KernelTags: null
     Tags: null
     CompetitionTags: null
     KernelVersionCompetitionSources: null
     KernelVersionDatasetSources: null
+    Teams: "LastSubmissionDate"
+    TeamMemberships: "RequestDate"
+    Submissions: "SubmissionDate"
+    ForumTopics: "CreationDate"
+    DatasetVersions: "CreationDate"
+    DatasetVotes: "VoteDate"
+    UserAchievements: "TierAchievementDate"
+    UserOrganizations: "JoinDate"
+    Organizations: "CreationDate"
