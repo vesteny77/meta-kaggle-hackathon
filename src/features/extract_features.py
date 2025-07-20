@@ -153,9 +153,10 @@ def read_code(gcs_handler, kernel_id):
             
             for cell in nb.get('cells', []):
                 if cell.get('cell_type') == 'code':
-                    code_cells.append("".join(cell.get('source', [])))
+                    # Join individual lines within a cell using newlines to preserve structure
+                    code_cells.append("\n".join(cell.get('source', [])))
                 elif cell.get('cell_type') == 'markdown':
-                    md_cells.append("".join(cell.get('source', [])))
+                    md_cells.append("\n".join(cell.get('source', [])))
             
             return "\n".join(code_cells), md_cells
         except Exception as e:
@@ -198,22 +199,34 @@ def detect_imports(code_str):
             elif isinstance(node, ast.ImportFrom):
                 if node.module:
                     imports.add(node.module.split('.')[0])
-    except SyntaxError:
-        # Fall back to regex for files with syntax errors
+    except SyntaxError as e:
+        # Fallback strategy: capture only the leading block of import statements
+        # (consecutive imports before the first non-import, non-empty line).
         import_regex = r"^\s*import\s+([a-zA-Z0-9_\.]+)"
         from_regex = r"^\s*from\s+([a-zA-Z0-9_\.]+)\s+import"
-        
+
         for line in code_str.split('\n'):
+            stripped = line.strip()
+            if not stripped:
+                # Skip blank lines
+                continue
+
             # Check for 'import' statements
-            match = re.match(import_regex, line)
+            match = re.match(import_regex, stripped)
             if match:
                 imports.add(match.group(1).split('.')[0])
                 continue
-                
+
             # Check for 'from ... import' statements
-            match = re.match(from_regex, line)
+            match = re.match(from_regex, stripped)
             if match:
                 imports.add(match.group(1).split('.')[0])
+                continue
+
+            # As soon as we encounter a non-import line, stop scanning. This prevents
+            # us from falsely capturing imports that appear later in the file after
+            # the syntax error (e.g., after an unterminated bracket).
+            break
     
     return imports
 
@@ -292,7 +305,12 @@ def embed_markdown(md_list, model):
     text = " ".join(md_list)[:8192]
     
     try:
-        return model.encode(text).tolist() if text else None
+        embedding = model.encode(text) if text else None
+        if embedding is None:
+            return None
+        # If the returned embedding supports `.tolist()` (e.g., numpy array), use it;
+        # otherwise, assume it's already a Python list/sequence.
+        return embedding.tolist() if hasattr(embedding, "tolist") else embedding
     except Exception as e:
         logger.error(f"Error embedding markdown: {str(e)}")
         return None
@@ -429,6 +447,18 @@ def main():
     
     # Shut down Ray
     ray.shutdown()
+
+
+def extract_features(*args, **kwargs):
+    """Backward compatibility wrapper used by the pipeline tests.
+    It simply delegates to :pyfunc:`main` but ignores any arguments because the
+    standalone CLI-style `main` function consumes no parameters in this
+    implementation. The function signature accepts *args and **kwargs so that
+    importing code can call it flexibly without raising TypeErrors, even though
+    it does nothing here.
+    """
+    logger.warning("`extract_features` wrapper called – delegating to `main()`.")
+    return main()
 
 
 if __name__ == "__main__":

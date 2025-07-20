@@ -41,9 +41,14 @@ class GCSFileHandler:
     def get_kernel_path(self, kernel_id: int) -> Optional[str]:
         """Generate path for a kernel ID."""
         # Determine the prefix dirs based on kernel ID
+        # Kaggle stores kernels in a slightly shifted directory scheme:
+        #   <digits 2-5>/<digits 6-8>/<kernel_id>.<ext>
+        # With a 10-digit zero-padded id string, this translates to:
+        #   prefix1 = padded_id[2:6]
+        #   prefix2 = padded_id[6:9]
         padded_id = str(kernel_id).zfill(10)
-        prefix1 = padded_id[:4]
-        prefix2 = padded_id[4:7]
+        prefix1 = padded_id[2:6]
+        prefix2 = padded_id[6:9]
         
         # Check for .py file
         py_path = f"{prefix1}/{prefix2}/{kernel_id}.py"
@@ -102,13 +107,14 @@ def read_kernel_code(handler: GCSFileHandler, kernel_id: int) -> Tuple[Optional[
                 if cell.get('cell_type') == 'code':
                     source = cell.get('source', [])
                     if isinstance(source, list):
-                        code_cells.append("".join(source))
+                        # Preserve line breaks within the cell
+                        code_cells.append("\n".join(source))
                     else:
                         code_cells.append(str(source))
                 elif cell.get('cell_type') == 'markdown':
                     source = cell.get('source', [])
                     if isinstance(source, list):
-                        md_cells.append("".join(source))
+                        md_cells.append("\n".join(source))
                     else:
                         md_cells.append(str(source))
             
