@@ -59,3 +59,24 @@ data_layer:
     Organizations: "CreationDate"
     KernelAcceleratorTypes: ~
 
+features:
+  local_code_root: "data/raw_code"
+  output_dir: "data/intermediate"
+  processed_dir: "data/processed"
+  metadata_path: "data/intermediate/kernel_bigjoin_clean.parquet"
+  embedding_model: "all-MiniLM-L6-v2"
+  batch_size: 400
+  sample_size: 0
+  keep_embeddings: false
+
+graphs:
+  output_dir: "data/graph"
+  visuals_dir: "visuals/graphs"
+  node_limit: 500
+  pagerank_alpha: 0.85
+  time_decay_hours: 168  # 7 days
+  libraries_to_analyze:
+    - "gbdt"
+    - "dl_pytorch"
+    - "dl_tf"
+    - "auto_ml"

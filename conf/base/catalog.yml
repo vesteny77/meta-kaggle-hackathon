@@ -12,3 +12,26 @@ bigjoin_clean:
 
 mini_meta:
   type: kedro.io.MemoryDataset
+
+# Feature extraction datasets
+kernel_features_raw:
+  type: kedro.io.MemoryDataset
+
+markdown_topics:
+  type: kedro.io.MemoryDataset
+
+kernel_features:
+  type: kedro.io.MemoryDataset
+
+# Graph analytics datasets
+graph_edge_files:
+  type: kedro.io.MemoryDataset
+
+graph_files:
+  type: kedro.io.MemoryDataset
+
+graph_metrics:
+  type: kedro.io.MemoryDataset
+
+graph_visualizations:
+  type: kedro.io.MemoryDataset
