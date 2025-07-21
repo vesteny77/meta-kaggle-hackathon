@@ -3,6 +3,7 @@ Pipeline node function definitions for feature extraction.
 """
 
 import os
+os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 import logging
 from pathlib import Path
 from typing import Dict, Any, Optional
@@ -55,9 +56,12 @@ def extract_features_node(params: Dict[str, Any]) -> Path:
     metadata_path = Path(params.get("metadata_path", "data/intermediate/kernel_bigjoin_clean.parquet"))
 
     model_name = params.get("embedding_model", "all-MiniLM-L6-v2")
-    batch_size = params.get("batch_size", 400)              # kernels per Ray task
+    batch_size = params.get("batch_size", 1500)              # kernels per Ray task
     sample_size = params.get("sample_size", 0)              # 0 = full dataset
     num_cpus    = params.get("num_cpus", os.cpu_count())
+    num_gpus    = params.get("num_gpus", 0)
+    num_gpus_per_task = params.get("num_gpus_per_task", 0)
+    flush_rows = params.get("flush_rows", 50_000)
     # Pick a short absolute path for Ray object spill directory to avoid UNIX socket length limits
     default_spill = Path("/tmp/ray_tmp")
     spill_dir   = Path(params.get("spill_dir", default_spill)).resolve()
@@ -68,13 +72,16 @@ def extract_features_node(params: Dict[str, Any]) -> Path:
     # Initialise Ray with spilling to disk
     # ------------------------------------------------------------------
     ray.shutdown()
+    os.environ["CUDA_VISIBLE_DEVICES"] = "0"
     ray.init(
         num_cpus=num_cpus,
+        num_gpus=num_gpus,
         _temp_dir=str(spill_dir),
         include_dashboard=False,
         ignore_reinit_error=True,
         local_mode=True,
     )
+    os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 
     logger.info("Metadata source: %s", metadata_path)
 
@@ -88,7 +95,19 @@ def extract_features_node(params: Dict[str, Any]) -> Path:
     #     scan = scan.filter(pl.col("is_commit") == True)
 
     # Select minimal columns
-    columns = [c for c in ["kernel_version_id", "execSeconds", "gpuType"] if c in scan.collect_schema().names()]
+    schema_names = scan.collect_schema().names()
+    if "kernel_id" in schema_names:
+        id_col = "kernel_id"
+    elif "kernel_version_id" in schema_names:
+        id_col = "kernel_version_id"
+    else:
+        raise ValueError("Neither 'kernel_id' nor 'kernel_version_id' found in metadata parquet")
+
+    columns = [id_col]
+    for col in ["execSeconds", "gpuType"]:
+        if col in schema_names:
+            columns.append(col)
+
     scan = scan.select(columns)
 
     # Row count (cheap – metadata file is indexed)
@@ -100,14 +119,13 @@ def extract_features_node(params: Dict[str, Any]) -> Path:
     else:
         logger.info("Processing full dataset: %d rows", total_rows)
 
-    # Ray remote wrapper (patched easily in unit tests)
-    remote_wrapper = ray.remote(getattr(process_kernel_batch, "_function", process_kernel_batch))
+    # Ray remote function – we may need to attach GPU resource per task
+    remote_options = {"num_gpus": num_gpus_per_task} if num_gpus_per_task else {}
 
     # ------------------------------------------------------------------
     # Stream over the scan in windows to keep memory constant
     # ------------------------------------------------------------------
     futures = []
-    shard_index = 0
     for offset in range(0, total_rows, batch_size):
         length = min(batch_size, total_rows - offset)
         batch_df = scan.slice(offset, length).collect(streaming=True)
@@ -121,22 +139,39 @@ def extract_features_node(params: Dict[str, Any]) -> Path:
         batch_rows = batch_df.rows()
 
         futures.append(
-            (shard_index, remote_wrapper.remote(batch_rows, str(local_root), model_name))
+            process_kernel_batch.options(**remote_options).remote(
+                batch_rows, str(local_root), model_name
+            )
         )
-        shard_index += 1
 
     logger.info("Submitted %d Ray tasks", len(futures))
 
     # ------------------------------------------------------------------
-    # As each task finishes, write its shard and free memory
+    # Incrementally write to Parquet with larger shards to avoid tiny files
     # ------------------------------------------------------------------
-    for shard_idx, future in futures:
-        batch_result = ray.get(future)
-        if not batch_result:
+    buffer: list[dict[str, Any]] = []
+    shard_counter = 0
+
+    def _flush():
+        nonlocal buffer, shard_counter
+        if not buffer:
+            return
+        shard_path = output_dir / f"features_{shard_counter:06}.parquet"
+        pl.DataFrame(buffer).write_parquet(shard_path, compression="zstd")
+        logger.info("Shard %s written (%d rows)", shard_path.name, len(buffer))
+        buffer = []
+        shard_counter += 1
+
+    # Gather task results as they finish
+    for future in ray.get(futures):
+        if not future:
             continue
-        shard_path = output_dir / f"features_{shard_idx:06}.parquet"
-        pl.DataFrame(batch_result).write_parquet(shard_path, compression="zstd")
-        logger.info("Shard %s written (%d rows)", shard_path.name, len(batch_result))
+        buffer.extend(future)
+        if len(buffer) >= flush_rows:
+            _flush()
+
+    # Flush remaining rows
+    _flush()
 
     ray.shutdown()
 
@@ -171,8 +206,29 @@ def topic_modeling_node(features_path: Path, params: Dict[str, Any]) -> Path:
     try:
         fp = Path(features_path)
         if fp.is_dir():
-            # Folder of Parquet shards written by extract_features_node
-            df = pl.scan_parquet(str(fp / "*.parquet")).collect()
+            # Folder of Parquet shards written by extract_features_node —
+            # read each shard separately, cast, then concatenate to avoid
+            # schema-type clashes (e.g., mean_cc Int64 vs Float64).
+            lazy_frames = []
+            for shard in fp.glob("*.parquet"):
+                lf = pl.scan_parquet(shard, missing_columns="insert")
+                # Cast mean_cc consistently
+                lf = lf.with_columns(pl.col("mean_cc").cast(pl.Float64))
+
+                cur_names = set(lf.collect_schema().names())
+                if "md_text" not in cur_names:
+                    lf = lf.with_columns(pl.lit(None).cast(pl.Utf8).alias("md_text"))
+
+                if "md_embedding" not in cur_names:
+                    lf = lf.with_columns(
+                        pl.lit(None).cast(pl.List(pl.Float64)).alias("md_embedding")
+                    )
+                lazy_frames.append(lf)
+
+            if not lazy_frames:
+                raise FileNotFoundError(f"No parquet shards found in {fp}")
+
+            df = pl.concat(lazy_frames).collect()
         else:
             df = pl.read_parquet(fp)
         logger.info("Loaded %d kernel features", len(df))
@@ -181,13 +237,17 @@ def topic_modeling_node(features_path: Path, params: Dict[str, Any]) -> Path:
         raise
     
     # Filter for kernels with embeddings
-    if "md_embedding" not in df.columns or "md_text" not in df.columns:
+    if "md_embedding" not in df.columns:
         logger.error("No markdown embeddings found in features")
         raise ValueError("No markdown embeddings found in features")
     
     embedding_df = df.filter(pl.col("md_embedding").is_not_null())
     kernel_ids = embedding_df["kernel_id"].to_list()
-    documents = embedding_df["md_text"].to_list()
+    # Use md_text if available else empty string
+    if "md_text" in embedding_df.columns:
+        documents = embedding_df["md_text"].fill_null("").to_list()
+    else:
+        documents = [""] * len(kernel_ids)
     
     emb_count = len(embedding_df)
     logger.info(f"Found {emb_count} kernels with markdown embeddings")
@@ -208,13 +268,42 @@ def topic_modeling_node(features_path: Path, params: Dict[str, Any]) -> Path:
     embeddings = np.vstack(embedding_df["md_embedding"].to_list())
     logger.info(f"Embeddings shape: {embeddings.shape}")
     
-    # Train topic model using embeddings; disable probability calculation for speed
-    logger.info("Training BERTopic model (embeddings only)")
-    model_kwargs = {"calculate_probabilities": False}
+    # ------------------------------------------------------------------
+    # Configure low-memory UMAP + multi-threaded HDBSCAN for scalability
+    # ------------------------------------------------------------------
+    logger.info("Building low-memory UMAP and multi-threaded HDBSCAN models")
+    try:
+        from umap import UMAP  # type: ignore
+        from hdbscan import HDBSCAN  # type: ignore
+    except ImportError as err:
+        logger.error("UMAP/HDBSCAN not installed: %s", err)
+        raise
+
+    umap_model = UMAP(
+        n_neighbors=params.get("umap_n_neighbors", 12),
+        n_components=params.get("umap_n_components", 5),
+        metric="cosine",
+        low_memory=True,
+        random_state=42,
+    )
+
+    hdbscan_model = HDBSCAN(
+        min_cluster_size=params.get("hdbscan_min_cluster_size", 30),
+        metric="euclidean",
+        core_dist_n_jobs=os.cpu_count(),
+    )
+
+    logger.info("Training BERTopic with custom UMAP/HDBSCAN (CPU)")
+    model_kwargs = {
+        "umap_model": umap_model,
+        "hdbscan_model": hdbscan_model,
+        "calculate_probabilities": False,
+        "verbose": True,
+    }
     if num_topics != "auto":
         model_kwargs["nr_topics"] = int(num_topics)
 
-    topic_model = BERTopic(verbose=True, **model_kwargs)
+    topic_model = BERTopic(**model_kwargs)
 
     logger.info("Calling BERTopic.fit_transform on %d docs", len(kernel_ids))
     try:
@@ -274,7 +363,24 @@ def merge_features_node(
     try:
         fp = Path(features_path)
         if fp.is_dir():
-            features_df = pl.scan_parquet(str(fp / "*.parquet")).collect()
+            # Load shards with schema alignment
+            lf_list = []
+            for shard in fp.glob("*.parquet"):
+                lf = pl.scan_parquet(shard, missing_columns="insert")
+                # Cast mean_cc to float64 for consistency
+                if "mean_cc" in lf.collect_schema().names():
+                    lf = lf.with_columns(pl.col("mean_cc").cast(pl.Float64))
+                # Ensure md_text/md_embedding columns exist
+                names = set(lf.collect_schema().names())
+                if "md_text" not in names:
+                    lf = lf.with_columns(pl.lit(None).cast(pl.Utf8).alias("md_text"))
+                if "md_embedding" not in names:
+                    lf = lf.with_columns(
+                        pl.lit(None).cast(pl.List(pl.Float64)).alias("md_embedding")
+                    )
+                lf_list.append(lf)
+
+            features_df = pl.concat(lf_list).collect()
         else:
             features_df = pl.read_parquet(fp)
         logger.info("Loaded %d kernel features", len(features_df))

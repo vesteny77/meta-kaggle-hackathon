@@ -187,7 +187,7 @@ def complexity_metrics(code_str):
     except Exception:
         mean_cc = max_cc = 0
     
-    return {"loc": loc, "mean_cc": mean_cc, "max_cc": max_cc}
+    return {"loc": loc, "mean_cc": float(mean_cc), "max_cc": max_cc}
 
 
 def embed_markdown(md_list, model):
@@ -233,6 +233,8 @@ def process_kernel_batch(kernel_batch, local_root: Path | str, model_name=None):
         list: List of feature dictionaries
     """
     file_handler = LocalFileHandler(local_root)
+    os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+    device = "cuda" if torch.cuda.is_available() else "cpu"
     
     # Initialize embedding model if needed
     model = None
@@ -243,11 +245,17 @@ def process_kernel_batch(kernel_batch, local_root: Path | str, model_name=None):
             # Force offline to prevent HuggingFace 429 and avoid repeated HTTP requests
             os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
             os.environ.setdefault("HF_HUB_OFFLINE", "1")
+            os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 
-            device = "cuda" if torch.cuda.is_available() else "cpu"
+            logger.info(f"Loading model {model_name} on {device}")
             try:
+                os.environ["CUDA_VISIBLE_DEVICES"] = "0"
                 model = SentenceTransformer(model_name, device=device, cache_folder=str(Path.home()/".cache"/"sentence_transformers"))
                 _MODEL_CACHE[model_name] = model
+                allocated_memory = torch.cuda.memory_allocated(device=device)
+                reserved_memory = torch.cuda.memory_reserved(device=device)
+                print(f"Allocated GPU memory: {allocated_memory} bytes")
+                print(f"Reserved GPU memory: {reserved_memory} bytes")
             except Exception as e:
                 logger.error(f"Error loading model {model_name}: {str(e)}")
                 model = None
@@ -277,15 +285,19 @@ def process_kernel_batch(kernel_batch, local_root: Path | str, model_name=None):
             **complexity_metrics(code_str),
         }
         
-        # Add markdown embeddings if model is available
+        # Markdown text (may be empty). Always insert column to keep schema consistent.
         if md_cells:
-            text = " ".join(md_cells)[:8192]
-            features["md_text"] = text
+            features["md_text"] = " ".join(md_cells)[:8192]
+        else:
+            features["md_text"] = None
 
+        # Sentence embeddings (optional, only if model loaded and markdown present)
         if model and md_cells:
             emb = embed_markdown(md_cells, model)
-            if emb is not None:
-                features["md_embedding"] = emb
+            features["md_embedding"] = emb if emb is not None else None
+        else:
+            # Ensure column exists even when no embedding
+            features["md_embedding"] = None
         
         results.append(features)
     
