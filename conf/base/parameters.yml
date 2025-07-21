@@ -1,10 +1,39 @@
 # Parameters for Meta Kaggle project
 
 # ETL parameters
-etl:
-  src_dir: "data/raw_csv"
-  dst_dir: "data/parquet/raw"
-  intermediate_dir: "data/intermediate"
+# etl:
+#   src_dir: "data/raw_csv"
+#   dst_dir: "data/parquet/raw"
+#   intermediate_dir: "data/intermediate"
+#   mini_meta_dir: "data/mini_meta"
+#   sample_frac: 0.01
+#   tables:
+#     KernelVersions: "CreationDate"
+#     Competitions: "DeadlineDate"
+#     Datasets: "CreationDate"
+#     Users: "RegisterDate"
+#     ForumMessages: "PostDate"
+#     Kernels: null
+#     KernelTags: null
+#     Tags: null
+#     CompetitionTags: null
+#     KernelVersionCompetitionSources: null
+#     KernelVersionDatasetSources: null
+#     Teams: "LastSubmissionDate"
+#     TeamMemberships: "RequestDate"
+#     Submissions: "SubmissionDate"
+#     ForumTopics: "CreationDate"
+#     DatasetVersions: "CreationDate"
+#     DatasetVotes: "VoteDate"
+#     UserAchievements: "TierAchievementDate"
+#     UserOrganizations: "JoinDate"
+#     Organizations: "CreationDate"
+
+data_layer:
+  src_dir: data/raw_csv
+  dst_dir: data/parquet/raw
+  output_dir: data/intermediate
+  pruned_output_path: data/intermediate/kernel_bigjoin_clean.parquet
   mini_meta_dir: "data/mini_meta"
   sample_frac: 0.01
   tables:
@@ -28,3 +57,5 @@ etl:
     UserAchievements: "TierAchievementDate"
     UserOrganizations: "JoinDate"
     Organizations: "CreationDate"
+    KernelAcceleratorTypes: ~
+

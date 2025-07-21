@@ -18,6 +18,7 @@ import polars as pl
 import ray
 from radon.complexity import cc_visit
 from sentence_transformers import SentenceTransformer
+import torch, os
 from datetime import datetime, timedelta
 from pathlib import Path
 import logging
@@ -25,6 +26,9 @@ from tqdm import tqdm
 import time
 
 from src.features.local_path_utils import LocalFileHandler, read_kernel_code
+
+# Cache to avoid re-loading model for every batch
+_MODEL_CACHE: dict[str, SentenceTransformer] = {}
 
 # Configure logging
 logging.basicConfig(
@@ -233,15 +237,30 @@ def process_kernel_batch(kernel_batch, local_root: Path | str, model_name=None):
     # Initialize embedding model if needed
     model = None
     if model_name:
-        try:
-            model = SentenceTransformer(model_name)
-        except Exception as e:
-            logger.error(f"Error loading model {model_name}: {str(e)}")
+        if model_name in _MODEL_CACHE:
+            model = _MODEL_CACHE[model_name]
+        else:
+            # Force offline to prevent HuggingFace 429 and avoid repeated HTTP requests
+            os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
+            os.environ.setdefault("HF_HUB_OFFLINE", "1")
+
+            device = "cuda" if torch.cuda.is_available() else "cpu"
+            try:
+                model = SentenceTransformer(model_name, device=device, cache_folder=str(Path.home()/".cache"/"sentence_transformers"))
+                _MODEL_CACHE[model_name] = model
+            except Exception as e:
+                logger.error(f"Error loading model {model_name}: {str(e)}")
+                model = None
     
     results = []
     for kernel_id, exec_sec, gpu_type in kernel_batch:
         # Read code files
-        code_str, md_cells = read_kernel_code(file_handler, kernel_id)
+        res = read_kernel_code(file_handler, kernel_id)
+        # Backwards compat: function may return 2-tuple (code, md) or 3-tuple (code, md, ext)
+        if len(res) == 3:
+            code_str, md_cells, _ = res
+        else:
+            code_str, md_cells = res
         
         if code_str is None:
             continue
@@ -259,6 +278,10 @@ def process_kernel_batch(kernel_batch, local_root: Path | str, model_name=None):
         }
         
         # Add markdown embeddings if model is available
+        if md_cells:
+            text = " ".join(md_cells)[:8192]
+            features["md_text"] = text
+
         if model and md_cells:
             emb = embed_markdown(md_cells, model)
             if emb is not None:

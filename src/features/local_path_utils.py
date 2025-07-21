@@ -32,7 +32,7 @@ class LocalFileHandler:
     # ---------------------------------------------------------------------
     def _prefixes(self, kernel_id: int) -> tuple[str, str]:
         padded = str(kernel_id).zfill(10)
-        return padded[2:6], padded[6:9]
+        return padded[:4], padded[4:7]
 
     # ------------------------------------------------------------------
     # Public API
@@ -53,6 +53,25 @@ class LocalFileHandler:
     # Convenience wrapper used in tests
     def file_exists(self, rel_path: str) -> bool:
         return (self.root / rel_path).exists()
+
+    # ------------------------------------------------------------------
+    # Convenience listing helpers (used for logging/sample introspection)
+    # ------------------------------------------------------------------
+    def list_paths(self, prefix: str | None = None, max_results: int = 100) -> list[str]:
+        """List up to *max_results* relative paths under *prefix* (if given)."""
+        base = self.root / prefix if prefix else self.root
+        paths = []
+        for p in base.rglob("*.*"):
+            # Only collect files, stop when we have enough
+            if p.is_file():
+                paths.append(str(p.relative_to(self.root)))
+                if len(paths) >= max_results:
+                    break
+        return paths
+
+    def list_sample_paths(self, limit: int = 10) -> list[str]:
+        """Return *limit* random-ish sample file paths for quick inspection."""
+        return self.list_paths(max_results=limit)
 
 
 # -------------------------------------------------------------------------

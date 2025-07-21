@@ -96,7 +96,7 @@ def test_extract_features_node(mock_ray_get, mock_ray_remote, mock_ray_init, sam
     ]]
     
     # Execute function
-    output_path = extract_features_node(sample_metadata, sample_params)
+    output_path = extract_features_node(sample_params)
     
     # Verify
     assert isinstance(output_path, Path)
@@ -154,7 +154,7 @@ def test_topic_modeling_node_no_embeddings(sample_params):
 def test_merge_features_node(sample_features, sample_topics, sample_metadata, sample_params):
     """Test the merge_features_node."""
     # Execute function
-    output_path = merge_features_node(sample_features, sample_topics, sample_metadata, sample_params)
+    output_path = merge_features_node(sample_features, sample_topics, sample_params)
     
     # Verify
     assert isinstance(output_path, Path)
@@ -180,7 +180,7 @@ def test_merge_features_node_keep_embeddings(sample_features, sample_topics, sam
     }
     
     # Execute function
-    output_path = merge_features_node(sample_features, sample_topics, sample_metadata, params)
+    output_path = merge_features_node(sample_features, sample_topics, params)
     
     # Verify
     result_df = pl.read_parquet(output_path)
@@ -189,10 +189,10 @@ def test_merge_features_node_keep_embeddings(sample_features, sample_topics, sam
     assert "md_embedding" in result_df.columns
 
 
-def test_merge_features_node_no_topics(sample_features, sample_metadata, sample_params):
+def test_merge_features_node_no_topics(sample_features, sample_params):
     """Test merge_features_node without topics."""
     # Execute function with None for topics path
-    output_path = merge_features_node(sample_features, None, sample_metadata, sample_params)
+    output_path = merge_features_node(sample_features, None, sample_params)
     
     # Verify
     assert isinstance(output_path, Path)

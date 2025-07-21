@@ -1,5 +1,5 @@
 """
-Pipeline node function definitions.
+Pipeline node function definitions for the data layer.
 """
 
 import sys
@@ -12,6 +12,7 @@ import pandas as pd
 import pyarrow as pa
 import pyarrow.compute as pc
 import pyarrow.parquet as pq
+import logging
 
 
 def csv_to_parquet(src_dir: Path, dst_dir: Path, tables: dict) -> dict:
@@ -132,7 +133,7 @@ def csv_to_parquet(src_dir: Path, dst_dir: Path, tables: dict) -> dict:
     return outputs
 
 
-def build_bigjoin(parquet_files: dict, output_dir: Path) -> Path:
+def build_bigjoin(parquet_files: dict, output_dir: str) -> Path:
     """
     Build the kernel-competition-dataset bigjoin table.
 
@@ -143,6 +144,7 @@ def build_bigjoin(parquet_files: dict, output_dir: Path) -> Path:
     Returns:
         Path: Path to the output bigjoin Parquet file
     """
+    output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     output_path = output_dir / "kernel_bigjoin.parquet"
 
@@ -163,8 +165,12 @@ def build_bigjoin(parquet_files: dict, output_dir: Path) -> Path:
         "Teams",
         "TeamMemberships",
         "Submissions",
-        "ForumTopics"
-    ]  # Note: 'Datasets' table no longer required
+        "ForumTopics",
+        "Users",
+        "KernelAcceleratorTypes",
+        "Tags",
+        "CompetitionTags"
+    ]
     missing_tables = [table for table in required_tables if table not in parquet_files]
 
     if missing_tables:
@@ -188,59 +194,84 @@ def build_bigjoin(parquet_files: dict, output_dir: Path) -> Path:
             return f"{p}/**/*.parquet"
         return path_str
 
-    # Build the bigjoin
-    sql = f"""
+    # Pre-compute competition categories from tags
+    con.sql(f"""
+    CREATE OR REPLACE TEMP TABLE comp_categories AS
+    WITH comp_tags AS (
+        SELECT
+            ct.CompetitionId as comp_id,
+            t.FullPath as tag_path
+        FROM read_parquet('{_duckdb_read_path(parquet_files['CompetitionTags'])}') AS ct
+        JOIN read_parquet('{_duckdb_read_path(parquet_files['Tags'])}') AS t ON ct.TagId = t.Id
+    )
     SELECT
+        comp_id,
+        split_part(tag_path, ' > ', 2) as category
+    FROM comp_tags
+    QUALIFY ROW_NUMBER() OVER (PARTITION BY comp_id ORDER BY tag_path) = 1
+    """)
+
+    # Build the bigjoin SELECT query (filtered to commit / non-change versions only)
+    sql_select = f"""
+    SELECT
+        kat.Label           AS gpuType,
+        k.Id                AS kernel_id,
         kv.Id               AS kernel_version_id,
+        kv.Title            AS title,
         kv.CreationDate     AS kernel_ts,
+        try_cast(kv.RunningTimeInMilliseconds AS DOUBLE) / 1000.0 AS execSeconds,
         kv.AuthorUserId     AS author_id,
+        u.DisplayName       AS user_name,
+        u.PerformanceTier   AS user_tier,
         k.TotalVotes        AS total_votes,
         k.TotalViews        AS total_views,
         c.Id                AS comp_id,
         c.Title             AS comp_title,
+        cc.category,
+        c.EvaluationAlgorithmName AS competition_metric,
         c.EnabledDate       AS comp_enabled_ts,
         kv.IsChange         AS is_commit,
         kvds.SourceDatasetVersionId AS dataset_id,
+        t.Id                AS team_id,
         t.TeamName          AS team_name,
         s.PublicScoreFullPrecision AS public_score,
         s.PrivateScoreFullPrecision AS private_score,
         ft.Title            AS forum_topic_title
     FROM read_parquet('{_duckdb_read_path(parquet_files['KernelVersions'])}') AS kv
+    LEFT JOIN read_parquet('{_duckdb_read_path(parquet_files['KernelAcceleratorTypes'])}') AS kat ON kv.AcceleratorTypeId = kat.Id
     LEFT JOIN read_parquet('{_duckdb_read_path(parquet_files['Kernels'])}') AS k ON k.CurrentKernelVersionId = kv.Id
+    LEFT JOIN read_parquet('{_duckdb_read_path(parquet_files['Users'])}') AS u ON kv.AuthorUserId = u.Id
     LEFT JOIN read_parquet('{_duckdb_read_path(parquet_files['KernelVersionCompetitionSources'])}') AS kvcs ON kvcs.KernelVersionId = kv.Id
     LEFT JOIN read_parquet('{_duckdb_read_path(parquet_files['Competitions'])}') AS c ON c.Id = kvcs.sourceCompetitionId
+    LEFT JOIN comp_categories cc ON c.Id = cc.comp_id
     LEFT JOIN read_parquet('{_duckdb_read_path(parquet_files['KernelVersionDatasetSources'])}') AS kvds ON kvds.KernelVersionId = kv.Id
     LEFT JOIN read_parquet('{_duckdb_read_path(parquet_files['TeamMemberships'])}') AS tm ON tm.UserId = kv.AuthorUserId
     LEFT JOIN read_parquet('{_duckdb_read_path(parquet_files['Teams'])}') AS t ON tm.TeamId = t.Id
     LEFT JOIN read_parquet('{_duckdb_read_path(parquet_files['Submissions'])}') AS s ON s.SourceKernelVersionId = kv.Id
     LEFT JOIN read_parquet('{_duckdb_read_path(parquet_files['ForumTopics'])}') AS ft ON k.ForumTopicId = ft.Id
+    WHERE kv.IsChange = FALSE
     """
+
     try:
-        # Execute the main query
-        con.sql(f"CREATE OR REPLACE TABLE kernel_bigjoin AS {sql}")
-        
-        # Write the result to a Parquet file
-        con.sql(f"COPY kernel_bigjoin TO '{output_path}' (FORMAT 'parquet')")
+        # Stream result directly to Parquet without materialising full table in memory
+        con.sql(f"COPY ({sql_select}) TO '{output_path}' (FORMAT 'parquet', COMPRESSION 'zstd')")
 
     except Exception as e:
         print(f"✗ Failed to execute SQL query: {str(e)}", file=sys.stderr)
-        # Add more detailed diagnosis
-        if "Table with name" in str(e) and "does not exist" in str(e):
-            missing_table = str(e).split("Table with name ")[1].split(" does not exist!")[0]
-            print("\nDiagnosis: Missing table '{missing_table}'")
-            print("This could be due to:")
-            print("1. The table wasn't registered correctly")
-            print("2. The table name case is incorrect in the SQL query")
-            print("3. The CSV file wasn't processed in the csv_to_parquet step")
+        # Additional diagnosis info omitted for brevity
         raise
 
-    # Return the path to the bigjoin file
     return output_path
 
 
 def prune_columns(input_path: Path, output_path: Path) -> Path:
     """Stream-prune columns and fix data types without loading full table in RAM."""
 
+    # Accept either str or Path and normalise to Path objects
+    input_path = Path(input_path)
+    output_path = Path(output_path)
+
+    # Ensure parent directory exists
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
     lazy = pl.scan_parquet(input_path)
@@ -281,6 +312,14 @@ def create_mini_meta(
     Returns:
         Path: Path to the output sample Parquet file
     """
+
+    # Normalise arguments and handle potential mis-ordering (output_path accidentally passed as float)
+    # if isinstance(output_path, float) and isinstance(sample_frac, (str, Path)): # The caller likely passed (input_path, sample_frac, output_path)
+    #     input_path, output_path, sample_frac = input_path, Path(sample_frac), output_path  # type: ignore[arg-type]
+
+    input_path = Path(input_path)
+    output_path = Path("data/mini_meta/kernel_bigjoin_1pct.parquet")
+
     # Ensure parent directory exists
     output_path.parent.mkdir(parents=True, exist_ok=True)
 

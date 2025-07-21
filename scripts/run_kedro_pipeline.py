@@ -55,29 +55,18 @@ def main():
         )
         return
 
-    # Run the pipeline
-    logger.info("Starting ETL pipeline...")
-    try:
-        # Set environment variable for config path
-        os.environ["KEDRO_CONFIG_PATTERNS"] = "**/conf/**/*"
+    # Bootstrap the project
+    metadata = bootstrap_project(project_root)
 
-        # Create a custom ConfigLoader to use our conf directory
-        conf_path = project_root / "conf"
-
-        # Bootstrap the project
-        metadata = bootstrap_project(project_root)
-
-        # Start a KedroSession with custom config paths
-        logger.info("Starting Kedro session...")
-        with KedroSession.create(
-            metadata.package_name, project_root, env="base", conf_source=conf_path
-        ) as session:
-            logger.info("Running ETL pipeline...")
-            session.run(pipeline_name="etl")
-            logger.info("ETL pipeline completed successfully!")
-    except Exception as e:
-        logger.error(f"Error running pipeline: {e}")
-        raise
+    # Start a KedroSession with custom config paths
+    logger.info("Starting Kedro session...")
+    conf_path = project_root / "conf"
+    with KedroSession.create(
+        metadata.package_name, project_root, env="base", conf_source=conf_path
+    ) as session:
+        logger.info("Running data_layer pipeline...")
+        session.run(pipeline_name="data_layer")
+        logger.info("Data layer pipeline completed successfully!")
 
 
 if __name__ == "__main__":

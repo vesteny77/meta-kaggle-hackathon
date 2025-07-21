@@ -3,19 +3,17 @@
 from typing import Dict
 
 from kedro.pipeline import Pipeline
-
-from src.pipeline.etl import create_pipeline as create_etl_pipeline
+from src.pipeline.data_layer import create_pipeline as create_data_layer_pipeline
+from src.pipeline.features import create_pipeline as create_feat_pipeline
 
 
 def register_pipelines() -> Dict[str, Pipeline]:
-    """Register the project's pipelines.
-
-    Returns:
-        A mapping from pipeline names to ``Pipeline`` objects.
-    """
-    etl_pipeline = create_etl_pipeline()
+    """Register the project's pipelines."""
+    data_layer_pipeline = create_data_layer_pipeline()
+    feat_pipeline = create_feat_pipeline()
 
     return {
-        "__default__": etl_pipeline,
-        "etl": etl_pipeline,
+        "__default__": data_layer_pipeline,
+        "data_layer": data_layer_pipeline,
+        "features": feat_pipeline,
     }

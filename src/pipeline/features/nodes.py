@@ -33,103 +33,115 @@ from src.features.local_path_utils import read_kernel_code
 logger = logging.getLogger(__name__)
 
 
-def extract_features_node(metadata_path: str, params: Dict[str, Any]) -> Path:
-    """
-    Node function for extracting features from kernel code files.
-    
-    Args:
-        metadata_path: Path to the kernel metadata Parquet file
-        params: Pipeline parameters
-        
-    Returns:
-        Path: Path to the output features Parquet file
-    """
-    # Configure parameters
-    local_root = Path(params.get("local_code_root", "data/raw_code"))
-    output_dir = Path(params.get("output_dir", "data/intermediate"))
-    output_path = output_dir / "kernel_features_raw.parquet"
-    sample_size = params.get("sample_size", 0)  # 0 means process all
-    model_name = params.get("embedding_model", "all-MiniLM-L6-v2")
-    
-    # Create output directory if needed
-    output_dir.mkdir(parents=True, exist_ok=True)
-    
-    # Initialize Ray for parallel processing
-    num_cpus = params.get("num_cpus", os.cpu_count())
-    ray.init(num_cpus=num_cpus, ignore_reinit_error=True)
-    
-    # Load metadata
-    try:
-        metadata_df = pl.read_parquet(metadata_path)
-        logger.info(f"Loaded metadata for {len(metadata_df)} kernels")
-    except Exception as e:
-        logger.error(f"Error loading metadata: {str(e)}")
-        raise
-    
-    # Apply filter for commit kernels if specified
-    if params.get("only_commits", True):
-        try:
-            metadata_df = metadata_df.filter(pl.col("is_commit") == True)
-            logger.info(f"Filtered to {len(metadata_df)} commit kernels")
-        except Exception as e:
-            logger.warning(f"Could not filter by is_commit: {str(e)}")
-    
-    # Apply sample limit if specified
-    if sample_size > 0:
-        metadata_df = metadata_df.head(sample_size)
-        logger.info(f"Using sample of {len(metadata_df)} kernels")
-    
-    # Extract kernels to process
-    try:
-        kernels_data = metadata_df.select(
-            ["kernel_version_id", "execSeconds", "gpuType"]
-        ).rows()
-    except Exception as e:
-        logger.error(f"Error preparing kernel data: {str(e)}")
-        if "kernel_version_id" not in metadata_df.columns:
-            available_cols = ", ".join(metadata_df.columns)
-            logger.error(f"Available columns: {available_cols}")
-            # Try alternate column name
-            kernels_data = metadata_df.select(
-                ["kernel_id", "execSeconds", "gpuType"]
-            ).rows()
-        else:
-            raise
-            
-    # Process in batches
-    batch_size = params.get("batch_size", 100)
-    batches = [
-        kernels_data[i:i + batch_size]
-        for i in range(0, len(kernels_data), batch_size)
-    ]
-    
-    logger.info(f"Processing {len(kernels_data)} kernels in {len(batches)} batches")
-    
-    # Use ray.remote wrapper *at call time* so that test patches of ray.remote
-    # are respected (process_kernel_batch was decorated at import time with the
-    # real ray.remote). Wrapping again ensures the patched stub is used and
-    # avoids requiring an actual running Ray cluster during tests.
+def extract_features_node(params: Dict[str, Any]) -> Path:
+    """Efficiently extract raw kernel-level features without exhausting RAM.
 
+    The function now:
+    1. Streams metadata in *batches* instead of loading everything at once.
+    2. Sends each batch to a Ray worker which returns a Python list of dicts.
+    3. Immediately persists each batch to its own Parquet shard, then frees memory.
+    The result is a folder full of small Parquet files that together make up
+    ``data/intermediate/kernel_features_raw/``. Down-stream Polars / DuckDB can
+    read the folder lazily, so no concatenation step is needed.
+    """
+
+    # ------------------------------------------------------------------
+    # Configuration & paths
+    # ------------------------------------------------------------------
+    local_root = Path(params.get("local_code_root", "data/raw_code"))
+    output_dir = Path(params.get("output_dir", "data/intermediate")) / "kernel_features_raw"
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    metadata_path = Path(params.get("metadata_path", "data/intermediate/kernel_bigjoin_clean.parquet"))
+
+    model_name = params.get("embedding_model", "all-MiniLM-L6-v2")
+    batch_size = params.get("batch_size", 400)              # kernels per Ray task
+    sample_size = params.get("sample_size", 0)              # 0 = full dataset
+    num_cpus    = params.get("num_cpus", os.cpu_count())
+    # Pick a short absolute path for Ray object spill directory to avoid UNIX socket length limits
+    default_spill = Path("/tmp/ray_tmp")
+    spill_dir   = Path(params.get("spill_dir", default_spill)).resolve()
+    spill_dir.mkdir(parents=True, exist_ok=True)
+    logger.info("Using Ray spill directory: %s", spill_dir)
+
+    # ------------------------------------------------------------------
+    # Initialise Ray with spilling to disk
+    # ------------------------------------------------------------------
+    ray.shutdown()
+    ray.init(
+        num_cpus=num_cpus,
+        _temp_dir=str(spill_dir),
+        include_dashboard=False,
+        ignore_reinit_error=True,
+        local_mode=True,
+    )
+
+    logger.info("Metadata source: %s", metadata_path)
+
+    # ------------------------------------------------------------------
+    # Lazy metadata scan
+    # ------------------------------------------------------------------
+    scan = pl.scan_parquet(metadata_path)
+
+    # Keep only commit kernels if requested (default True)
+    # if params.get("only_commits", True):
+    #     scan = scan.filter(pl.col("is_commit") == True)
+
+    # Select minimal columns
+    columns = [c for c in ["kernel_version_id", "execSeconds", "gpuType"] if c in scan.collect_schema().names()]
+    scan = scan.select(columns)
+
+    # Row count (cheap – metadata file is indexed)
+    total_rows = scan.select(pl.count()).collect().item()
+    if sample_size and sample_size > 0:
+        total_rows = min(total_rows, sample_size)
+        scan = scan.head(sample_size)
+        logger.info("Sample size activated: %d rows", total_rows)
+    else:
+        logger.info("Processing full dataset: %d rows", total_rows)
+
+    # Ray remote wrapper (patched easily in unit tests)
     remote_wrapper = ray.remote(getattr(process_kernel_batch, "_function", process_kernel_batch))
 
-    futures = [
-        remote_wrapper.remote(batch, str(local_root), model_name)
-        for batch in batches
-    ]
-    
-    # Collect results
-    all_results = []
-    for batch_result in ray.get(futures):
-        all_results.extend(batch_result)
-    
-    # Convert to DataFrame and save
-    result_df = pl.DataFrame(all_results)
-    result_df.write_parquet(output_path)
-    
-    # Shut down Ray
+    # ------------------------------------------------------------------
+    # Stream over the scan in windows to keep memory constant
+    # ------------------------------------------------------------------
+    futures = []
+    shard_index = 0
+    for offset in range(0, total_rows, batch_size):
+        length = min(batch_size, total_rows - offset)
+        batch_df = scan.slice(offset, length).collect(streaming=True)
+
+        # Fill missing columns if any
+        if "execSeconds" not in batch_df.columns:
+            batch_df = batch_df.with_columns(pl.lit(None).alias("execSeconds"))
+        if "gpuType" not in batch_df.columns:
+            batch_df = batch_df.with_columns(pl.lit("None").alias("gpuType"))
+
+        batch_rows = batch_df.rows()
+
+        futures.append(
+            (shard_index, remote_wrapper.remote(batch_rows, str(local_root), model_name))
+        )
+        shard_index += 1
+
+    logger.info("Submitted %d Ray tasks", len(futures))
+
+    # ------------------------------------------------------------------
+    # As each task finishes, write its shard and free memory
+    # ------------------------------------------------------------------
+    for shard_idx, future in futures:
+        batch_result = ray.get(future)
+        if not batch_result:
+            continue
+        shard_path = output_dir / f"features_{shard_idx:06}.parquet"
+        pl.DataFrame(batch_result).write_parquet(shard_path, compression="zstd")
+        logger.info("Shard %s written (%d rows)", shard_path.name, len(batch_result))
+
     ray.shutdown()
-    
-    return output_path
+
+    # Return folder path; Kedro catalog can point to it as a partitioned dataset
+    return output_dir
 
 
 def topic_modeling_node(features_path: Path, params: Dict[str, Any]) -> Path:
@@ -157,60 +169,63 @@ def topic_modeling_node(features_path: Path, params: Dict[str, Any]) -> Path:
     # Load features with embeddings
     logger.info(f"Loading features from {features_path}")
     try:
-        df = pl.read_parquet(features_path)
-        logger.info(f"Loaded {len(df)} kernel features")
+        fp = Path(features_path)
+        if fp.is_dir():
+            # Folder of Parquet shards written by extract_features_node
+            df = pl.scan_parquet(str(fp / "*.parquet")).collect()
+        else:
+            df = pl.read_parquet(fp)
+        logger.info("Loaded %d kernel features", len(df))
     except Exception as e:
-        logger.error(f"Error loading features: {str(e)}")
+        logger.error("Error loading features: %s", e)
         raise
     
     # Filter for kernels with embeddings
-    if "md_embedding" not in df.columns:
+    if "md_embedding" not in df.columns or "md_text" not in df.columns:
         logger.error("No markdown embeddings found in features")
         raise ValueError("No markdown embeddings found in features")
     
     embedding_df = df.filter(pl.col("md_embedding").is_not_null())
     kernel_ids = embedding_df["kernel_id"].to_list()
+    documents = embedding_df["md_text"].to_list()
     
-    logger.info(f"Found {len(embedding_df)} kernels with markdown embeddings")
-    if len(embedding_df) < 100:
+    emb_count = len(embedding_df)
+    logger.info(f"Found {emb_count} kernels with markdown embeddings")
+
+    MIN_DOCS = 10
+    if emb_count < MIN_DOCS:
+        logger.warning(
+            "Only %d markdown embeddings found (<%d). Skipping topic modeling step.",
+            emb_count,
+            MIN_DOCS,
+        )
+        return None
+
+    if emb_count < 100:
         logger.warning("Very few embeddings found, topic modeling may not be effective")
-        # Proceed even with very small datasets (e.g., unit tests) instead of
-        # raising an error. Downstream consumers should interpret results with
-        # caution.
-        if len(embedding_df) < 10:
-            logger.warning("Proceeding with topic modeling despite fewer than 10 embeddings (test mode).")
     
     # Extract embeddings into numpy array
     embeddings = np.vstack(embedding_df["md_embedding"].to_list())
     logger.info(f"Embeddings shape: {embeddings.shape}")
     
-    # Train topic model
-    logger.info("Training BERTopic model")
-    model_kwargs = {}
+    # Train topic model using embeddings; disable probability calculation for speed
+    logger.info("Training BERTopic model (embeddings only)")
+    model_kwargs = {"calculate_probabilities": False}
     if num_topics != "auto":
         model_kwargs["nr_topics"] = int(num_topics)
-        
+
     topic_model = BERTopic(verbose=True, **model_kwargs)
-    topics, probs = topic_model.fit_transform(embeddings)
-    
-    # Save model
-    import pickle
-    with open(model_output, "wb") as f:
-        pickle.dump(topic_model, f)
-    
-    # Create topic dataframe
-    # Determine topic probabilities depending on the type returned by BERTopic
-    if isinstance(probs, list):
-        topic_probs = probs
-    else:
-        # numpy array cases
-        import numpy as np
-        topic_probs = probs.max(axis=1) if getattr(probs, "ndim", 1) > 1 else probs
+
+    logger.info("Calling BERTopic.fit_transform on %d docs", len(kernel_ids))
+    try:
+        topics, _ = topic_model.fit_transform(documents, embeddings)
+    except Exception as e:
+        logger.exception("BERTopic fit_transform failed: %s", e)
+        raise
 
     topic_df = pl.DataFrame({
         "kernel_id": kernel_ids,
         "topic_id": topics,
-        "topic_prob": topic_probs
     })
     
     # Add topic labels
@@ -230,10 +245,9 @@ def topic_modeling_node(features_path: Path, params: Dict[str, Any]) -> Path:
 
 
 def merge_features_node(
-    features_path: Path, 
-    topics_path: Optional[Path], 
-    metadata_path: Path,
-    params: Dict[str, Any]
+    features_path: Path,
+    topics_path: Optional[Path],
+    params: Dict[str, Any],
 ) -> Path:
     """
     Node function for merging feature data with topics and metadata.
@@ -258,10 +272,14 @@ def merge_features_node(
     # Load raw features
     logger.info(f"Loading features from {features_path}")
     try:
-        features_df = pl.read_parquet(features_path)
-        logger.info(f"Loaded {len(features_df)} kernel features")
+        fp = Path(features_path)
+        if fp.is_dir():
+            features_df = pl.scan_parquet(str(fp / "*.parquet")).collect()
+        else:
+            features_df = pl.read_parquet(fp)
+        logger.info("Loaded %d kernel features", len(features_df))
     except Exception as e:
-        logger.error(f"Error loading features: {str(e)}")
+        logger.error("Error loading features: %s", e)
         raise
     
     # Load topic assignments if available
@@ -281,28 +299,26 @@ def merge_features_node(
         except Exception as e:
             logger.warning(f"Error loading topics: {str(e)}. Continuing without topics.")
     
-    # Load additional metadata if available
-    logger.info(f"Loading metadata from {metadata_path}")
-    try:
-        # Only load relevant columns to save memory
-        metadata_df = pl.read_parquet(
-            metadata_path,
-            columns=["kernel_version_id", "kernel_ts", "comp_id", "comp_title", "category"]
-        )
-        
-        # Handle column name differences
-        if "kernel_version_id" in metadata_df.columns and "kernel_id" in result_df.columns:
-            # Rename to match
-            metadata_df = metadata_df.rename({"kernel_version_id": "kernel_id"})
-        
-        # Merge with metadata
-        result_df = result_df.join(
-            metadata_df,
-            on="kernel_id",
-            how="left"
-        )
-    except Exception as e:
-        logger.warning(f"Error loading or merging metadata: {str(e)}. Continuing without additional metadata.")
+    metadata_path = Path(params.get("metadata_path", "data/intermediate/kernel_bigjoin_clean.parquet"))
+    
+    # Select only the necessary columns from metadata to merge
+    metadata_cols = [
+        "kernel_version_id", "kernel_ts", "comp_id", 
+        "comp_title", "team_id", "user_tier"
+    ]
+    
+    # Check which of these are actually available
+    meta_schema = pl.scan_parquet(metadata_path).collect_schema().names()
+    available_meta_cols = [c for c in metadata_cols if c in meta_schema]
+    
+    metadata_df = pl.read_parquet(metadata_path, columns=available_meta_cols)
+
+    # Rename kernel_version_id to kernel_id for joining
+    if "kernel_version_id" in metadata_df.columns:
+        metadata_df = metadata_df.rename({"kernel_version_id": "kernel_id"})
+
+    # Join with the features
+    result_df = result_df.join(metadata_df, on="kernel_id", how="left")
     
     # Remove embeddings to save space (unless requested to keep them)
     if not keep_embeddings and "md_embedding" in result_df.columns:
@@ -321,7 +337,7 @@ def create_pipeline(**kwargs) -> Pipeline:
         [
             node(
                 extract_features_node,
-                inputs=["bigjoin_clean", "params:features"],
+                inputs=["params:features"],
                 outputs="kernel_features_raw",
                 name="extract_features",
             ),
@@ -333,7 +349,7 @@ def create_pipeline(**kwargs) -> Pipeline:
             ),
             node(
                 merge_features_node,
-                inputs=["kernel_features_raw", "markdown_topics", "bigjoin_clean", "params:features"],
+                inputs=["kernel_features_raw", "markdown_topics", "params:features"],
                 outputs="kernel_features",
                 name="merge_features",
             ),

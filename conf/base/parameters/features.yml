@@ -1,0 +1,12 @@
+# parameters namespace
+features:
+  local_code_root: data/raw_code
+  output_dir: data/intermediate
+  sample_size: 0          # 0 -> process all
+  batch_size: 100
+  embedding_model: all-MiniLM-L6-v2
+  num_cpus: 0             # 0 -> auto-detect
+  only_commits: true
+  processed_dir: data/processed
+  keep_embeddings: false
+  num_topics: auto 

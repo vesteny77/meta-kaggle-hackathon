@@ -52,3 +52,6 @@ package_name = "src"
 project_name = "meta_kaggle_hackathon"
 kedro_init_version = "1.0.0"
 source_dir = "src"
+
+[tool.kedro_telemetry]
+project_id = "12f3cda160c942e38b1d5070786d0c08"

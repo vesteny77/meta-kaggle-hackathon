@@ -15,6 +15,8 @@ from .nodes import (
     validate_schema,
 )
 
+import logging
+
 
 def csv_to_parquet_node(params):
     """
@@ -122,9 +124,11 @@ def create_mini_meta_node(bigjoin_clean_path, params):
         Path: Path to the mini-meta sample parquet
     """
     sample_frac = params.get("sample_frac", 0.01)
-    mini_meta_dir = Path(params.get("mini_meta_dir", "data/mini_meta"))
+    mini_meta_dir = Path("data/mini_meta")
     output_path = mini_meta_dir / f"kernel_bigjoin_{int(sample_frac*100)}pct.parquet"
-    return create_mini_meta(bigjoin_clean_path, output_path, sample_frac)
+    logging.info(f"mini_meta_dir: {mini_meta_dir}")
+    logging.info(f"output_path: {output_path}")
+    return create_mini_meta(input_path=bigjoin_clean_path, output_path=output_path, sample_frac=sample_frac)
 
 
 def create_pipeline(**kwargs):
@@ -133,37 +137,37 @@ def create_pipeline(**kwargs):
         [
             node(
                 csv_to_parquet_node,
-                inputs="params:etl",
+                inputs="params:data_layer",
                 outputs="parquet_raw",
                 name="csv_to_parquet",
             ),
             node(
                 validate_schema_node,
-                inputs=["parquet_raw", "params:etl"],
+                inputs=["parquet_raw", "params:data_layer"],
                 outputs="schema_validation",
                 name="validate_schema",
             ),
             node(
                 build_bigjoin_node,
-                inputs=["parquet_raw", "params:etl"],
+                inputs=["parquet_raw", "params:data_layer"],
                 outputs="bigjoin",
                 name="build_bigjoin",
             ),
             node(
                 prune_columns_node,
-                inputs=["bigjoin", "params:etl"],
+                inputs=["bigjoin", "params:data_layer"],
                 outputs="bigjoin_clean",
                 name="prune_columns",
             ),
             node(
                 validate_data_node,
-                inputs=["bigjoin_clean", "params:etl"],
+                inputs=["bigjoin_clean", "params:data_layer"],
                 outputs="data_validation",
                 name="validate_data",
             ),
             node(
                 create_mini_meta_node,
-                inputs=["bigjoin_clean", "params:etl"],
+                inputs=["bigjoin_clean", "params:data_layer"],
                 outputs="mini_meta",
                 name="create_mini_meta",
             ),

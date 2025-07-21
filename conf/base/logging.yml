@@ -34,6 +34,16 @@ loggers:
   src:
     level: INFO
 
+  src.pipeline.data_layer:
+    level: INFO
+    handlers: [console, file]
+    propagate: no
+
+  src.pipeline.features:
+    level: INFO
+    handlers: [console, file]
+    propagate: no
+
 root:
   handlers: [console, file, error_file]
   level: INFO
