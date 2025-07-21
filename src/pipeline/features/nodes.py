@@ -293,6 +293,22 @@ def topic_modeling_node(features_path: Path, params: Dict[str, Any]) -> Path:
         core_dist_n_jobs=os.cpu_count(),
     )
 
+    # Optional GPU-backed representation model (single shared instance)
+    os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+    rep_model_name = params.get("representation_model", None)
+    representation_model = None
+    if rep_model_name:
+        try:
+            import torch  # pylint: disable=import-error
+            from sentence_transformers import SentenceTransformer  # type: ignore
+
+            device = "cuda" if torch.cuda.is_available() else "cpu"
+            logger.info("Loading representation SentenceTransformer %s on %s", rep_model_name, device)
+            representation_model = SentenceTransformer(rep_model_name, device=device)
+        except Exception as rep_err:  # pragma: no cover
+            logger.warning("Could not load representation model %s: %s. Falling back to KeyBERT.", rep_model_name, rep_err)
+            representation_model = None
+
     logger.info("Training BERTopic with custom UMAP/HDBSCAN (CPU)")
     model_kwargs = {
         "umap_model": umap_model,
@@ -302,6 +318,8 @@ def topic_modeling_node(features_path: Path, params: Dict[str, Any]) -> Path:
     }
     if num_topics != "auto":
         model_kwargs["nr_topics"] = int(num_topics)
+    if representation_model is not None:
+        model_kwargs["representation_model"] = representation_model
 
     topic_model = BERTopic(**model_kwargs)
 

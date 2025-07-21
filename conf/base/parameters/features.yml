@@ -5,6 +5,7 @@ features:
   sample_size: 5000         # 0 -> process all
   batch_size: 1500       # Ray task batch size
   embedding_model: all-MiniLM-L6-v2
+  representation_model: all-MiniLM-L6-v2
   num_cpus: 0             # 0 -> auto-detect CPUs
   num_gpus: 1             # GPUs to reserve for Ray (0 = CPU only)
   num_gpus_per_task: 0.1  # Fractional GPU resource each worker claims
