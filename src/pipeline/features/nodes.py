@@ -295,18 +295,39 @@ def topic_modeling_node(features_path: Path, params: Dict[str, Any]) -> Path:
 
     # Optional GPU-backed representation model (single shared instance)
     os.environ["CUDA_VISIBLE_DEVICES"] = "0"
-    rep_model_name = params.get("representation_model", None)
-    representation_model = None
-    if rep_model_name:
+    # NOTE: BERTopic expects `embedding_model` (for sentence embeddings) and
+    #       `representation_model` (for refining topic labels). Passing a raw
+    #       SentenceTransformer as *representation_model* triggers a TypeError.
+
+    # 1. Load an optional SentenceTransformer to generate embeddings
+    embed_model_name = params.get("embedding_model", None) or params.get("representation_model", None)
+    embedding_model = None
+    if embed_model_name:
         try:
             import torch  # pylint: disable=import-error
             from sentence_transformers import SentenceTransformer  # type: ignore
 
             device = "cuda" if torch.cuda.is_available() else "cpu"
-            logger.info("Loading representation SentenceTransformer %s on %s", rep_model_name, device)
-            representation_model = SentenceTransformer(rep_model_name, device=device)
+            logger.info("Loading SentenceTransformer embedding model %s on %s", embed_model_name, device)
+            embedding_model = SentenceTransformer(embed_model_name, device=device)
+        except Exception as embed_err:  # pragma: no cover
+            logger.warning("Could not load embedding model %s: %s. Falling back to BERTopic default.", embed_model_name, embed_err)
+            embedding_model = None
+
+    # 2. Optionally create a representation tuner for refined topic labels.
+    # Disabled by default because this step can be memory-intensive.
+    representation_model = None
+    if params.get("enable_representation_model", False):
+        try:
+            from bertopic.representation import KeyBERTInspired  # type: ignore
+
+            representation_model = KeyBERTInspired(top_n_words=params.get("top_n_words", 10))
+            logger.info("KeyBERTInspired representation model enabled for topic fine-tuning")
         except Exception as rep_err:  # pragma: no cover
-            logger.warning("Could not load representation model %s: %s. Falling back to KeyBERT.", rep_model_name, rep_err)
+            logger.warning(
+                "Failed to initialize KeyBERTInspired representation model: %s. Will fall back to default c-TF-IDF labels.",
+                rep_err,
+            )
             representation_model = None
 
     logger.info("Training BERTopic with custom UMAP/HDBSCAN (CPU)")
@@ -318,6 +339,8 @@ def topic_modeling_node(features_path: Path, params: Dict[str, Any]) -> Path:
     }
     if num_topics != "auto":
         model_kwargs["nr_topics"] = int(num_topics)
+    if embedding_model is not None:
+        model_kwargs["embedding_model"] = embedding_model
     if representation_model is not None:
         model_kwargs["representation_model"] = representation_model
 
@@ -398,14 +421,30 @@ def merge_features_node(
                     )
                 lf_list.append(lf)
 
-            features_df = pl.concat(lf_list).collect()
+            # If embeddings are not needed, drop the column *before* collecting to
+            # prevent materialising huge list columns in memory.
+            if not keep_embeddings:
+                lf_list = [lf.drop("md_embedding") if "md_embedding" in lf.collect_schema().names() else lf for lf in lf_list]
+
+            features_df = pl.concat(lf_list).collect(streaming=True)
         else:
-            features_df = pl.read_parquet(fp)
+            # Load single parquet file; optionally project columns to exclude embeddings.
+            if keep_embeddings:
+                features_df = pl.read_parquet(fp)
+            else:
+                # Read all columns except md_embedding to conserve memory.
+                cols = pl.read_parquet_schema(fp).names()
+                cols_to_read = [c for c in cols if c != "md_embedding"]
+                features_df = pl.read_parquet(fp, columns=cols_to_read)
         logger.info("Loaded %d kernel features", len(features_df))
     except Exception as e:
         logger.error("Error loading features: %s", e)
         raise
     
+    # Ensure embeddings column is dropped (single-file case) if keep_embeddings is False
+    if not keep_embeddings and "md_embedding" in features_df.columns:
+        features_df = features_df.drop("md_embedding")
+
     # Load topic assignments if available
     result_df = features_df
     if topics_path is not None:
@@ -444,9 +483,9 @@ def merge_features_node(
     # Join with the features
     result_df = result_df.join(metadata_df, on="kernel_id", how="left")
     
-    # Remove embeddings to save space (unless requested to keep them)
+    # Embeddings were already dropped earlier, but double-check to be safe
     if not keep_embeddings and "md_embedding" in result_df.columns:
-        logger.info("Removing markdown embeddings to save space")
+        logger.info("Ensuring markdown embeddings dropped to save space")
         result_df = result_df.drop("md_embedding")
     
     # Save merged features
