@@ -1,14 +1,38 @@
-# Meta Kaggle Hackathon Project Setup
-
-This document describes how to set up and run the Meta Kaggle Hackathon project.
+# From XGBoost to Transformers: 15 Years of Evolving Kaggle Strategies
 
 ## Project Overview
 
-From XGBoost to Transformers: 15 Years of Evolving Kaggle Strategies
+This project analyzes the evolution of machine learning tools and techniques over Kaggle's 15-year history using the Meta Kaggle and Meta Kaggle Code datasets. By examining the patterns, trends, and dynamics within this unique ecosystem, we uncover insights into how data science strategies and methodologies have evolved in response to changing technologies, resources, and community knowledge.
 
-This project analyzes the evolution of machine learning tools and techniques over Kaggle's history using the Meta Kaggle and Meta Kaggle Code datasets.
+## Key Findings
 
-## Directory Structure
+- **Library Adoption**: We trace the rise of gradient boosting libraries (XGBoost, LightGBM, CatBoost) and their eventual competition with deep learning frameworks (PyTorch, TensorFlow) across different competition domains.
+  
+- **Resource Utilization**: Analysis of GPU usage, execution time, and memory requirements reveals how computational resources correlate with leaderboard performance gains over time.
+
+- **Knowledge Propagation**: Through fork networks and collaboration patterns, we visualize how innovative techniques spread through the Kaggle community.
+
+- **Domain-Specific Evolution**: Different competition domains (Computer Vision, NLP, Tabular) show distinct patterns in tool adoption and methodology trends.
+
+## Interactive Visualizations
+
+Explore our key findings through these interactive visualizations:
+
+1. [Library Adoption Streamgraph](sample/1_streamgraph_library_adoption.html) - Visualizes the rise and evolution of ML libraries from 2010-2025
+
+2. [Compute ROI Heatmap](sample/2_heatmap_compute_roi.html) - Shows the relationship between computation time and performance gains
+
+3. [Methods to Competitions Sankey](sample/3_sankey_methods_competitions.html) - Maps which methods win which types of competitions
+
+4. [Team Diversity Choropleth](sample/4_choropleth_team_diversity.html) - Visualizes team-location diversity versus success metrics
+
+5. [Animated Fork Network](sample/5_animated_fork_network.html) - Shows how knowledge spreads through the community via notebook forks
+
+6. [Library Adoption by Domain](sample/6_library_adoption_by_domain.html) - Compares tool adoption across different competition domains
+
+## Project Structure and Development
+
+### Directory Structure
 
 ```
 meta-kaggle-hackathon/
@@ -40,7 +64,19 @@ meta-kaggle-hackathon/
     └── video_frames/       # Video frames for animations
 ```
 
-## Setup
+## Technical Methodology
+
+Our analysis pipeline consists of four main components:
+
+1. **Data Layer** - Efficient processing of large-scale Meta Kaggle data using Polars and DuckDB
+
+2. **Feature Extraction** - Code analysis to identify tool usage, techniques, and complexity metrics
+
+3. **Graph Analytics** - NetworkX-based analysis of fork networks and collaboration patterns
+
+4. **Statistical Analysis** - Time series, survival analysis, and regression models to quantify trends
+
+### Setup
 
 1. Make sure you have Conda installed (Miniconda or Anaconda)
 
@@ -60,13 +96,13 @@ chmod +x setup_env.sh
 conda activate meta-kaggle
 ```
 
-3. Prepare the dataset directories:
+4. Prepare the dataset directories:
 
 ```bash
 mkdir -p data/{raw,raw_csv,raw_code,parquet,intermediate,processed,mini_meta}
 ```
 
-4. Place Meta Kaggle CSV files into `data/raw_csv/` and Meta Kaggle Code files into `data/raw_code/`.
+5. Place Meta Kaggle CSV files into `data/raw_csv/` and Meta Kaggle Code files into `data/raw_code/`.
 
 ## Running the Pipeline
 
